@@ -37,7 +37,7 @@ from bosdyn.client.frame_helpers import (
 from bosdyn.client.image import ImageClient, build_image_request
 from bosdyn.client.lease import Error as LeaseError
 from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
-from bosdyn.client.math_helpers import SE2Pose, SE3Pose, SE3Velocity
+from bosdyn.client.math_helpers import SE2Pose, SE3Pose, SE3Velocity, Quat
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient, blocking_stand
 from bosdyn.client.robot_state import RobotStateClient, RobotStateStreamingClient
 from bosdyn.client.world_object import WorldObjectClient, world_object_pb2
@@ -50,7 +50,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.timer import Timer
 from sensor_msgs.msg import CameraInfo, Image, Imu
-from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
+from tf2_ros.buffer import Buffer
+from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster, TransformListener
 
 from spot_action.action import MoveRelativeXY
 from spot_srvs.srv import GetTransform
@@ -71,15 +72,18 @@ class SpotROS2Driver(Node):
         password = self.get_parameter("password").get_parameter_value().string_value
 
         # load the user-defined odometry frame
-        self.declare_parameter("odometry_frame", "kinematic")
-        # to avoid the naming confusion:
         # ODOM_FRAME_NAME -> spot odometry using kinematic -> /odom_kinematic
         # VISION_FRAME_NAME -> spot odometry using kinematic -> /odom_vision
+        # odom_lidar -> odometry from an external LiDAR
+        self.declare_parameter("odometry_frame", "kinematic")
         self.odom_choice = self.get_parameter("odometry_frame").get_parameter_value().string_value
         if self.odom_choice == "kinematic":
             self.odom_frame = ODOM_FRAME_NAME
         elif self.odom_choice == "vision":
             self.odom_frame = VISION_FRAME_NAME
+        elif self.odom_choice == "lidar":
+            # TODO: need to register the lidar odometry frame to the spot TF tree
+            self.odom_frame = ODOM_FRAME_NAME
         else:
             self.get_logger().error(f'Invalid odometry frame: {self.odom_choice}. Using default "kinematic".')
             self.odom_choice = "kinematic"
@@ -170,13 +174,16 @@ class SpotROS2Driver(Node):
             raise
 
         # ROS 2 publishers and subscribers
-        self.cmd_vel_subscriber = self.create_subscription(Twist, "cmd_vel", self.cmd_vel_callback, 10)
-
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         self.tf_broadcaster = TransformBroadcaster(self)
-        self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.cmd_vel_subscriber = self.create_subscription(Twist, "cmd_vel", self.cmd_vel_callback, 10)
+
         self.image_publisher = self.create_publisher(Image, "camera/image_raw", 10)
         self.cam_info_publisher = self.create_publisher(CameraInfo, "camera/camera_info", 10)
+        self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
 
         # NOTE: DDS can only suport timer periond 0.5s or higher, need to use Zenoh 
         # middleware to achieve 0.1s
@@ -185,7 +192,7 @@ class SpotROS2Driver(Node):
             0.1, self.publish_robot_state, callback_group=robot_state_pub_group
         )
 
-        # publish camera frame as static TF
+        # broadcast camera frame as static TF
         request = build_image_request(
             "frontleft_fisheye_image",
             pixel_format=image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U8,
@@ -208,8 +215,6 @@ class SpotROS2Driver(Node):
             callback_group=action_group,
         )
 
-        self.srv = self.create_service(GetTransform, "get_fiducial_transform", self.handle_get_transform)
-
         if self.use_streaming_client:
             self.robot_state_stream = None
             self.robot_state_stream_thread = threading.Thread(target=self.handle_state_streaming, daemon=True)
@@ -221,22 +226,6 @@ class SpotROS2Driver(Node):
             self.robot_state_stream_publisher = self.create_timer(
                 0.01, self.stream_robot_state, callback_group=robot_state_stream_group
             )
-
-    def handle_get_transform(self, request, response):
-        fiducials = self.world_object_client.list_world_objects([world_object_pb2.WORLD_OBJECT_APRILTAG]).world_objects
-        if not fiducials:
-            self.get_logger().warn("No AprilTag fiducials found.")
-            response.success = False
-            response.message = "No AprilTag fiducials found."
-            return response
-
-        tform_odom_fiducial = get_a_tform_b(fiducials[0].transforms_snapshot, self.odom_frame, "filtered_fiducial_200")
-        tform_fiducial_odom = tform_odom_fiducial.inverse()
-        self.publish_static_transform(tform_fiducial_odom, request.fiducial_name, f"odom_{self.odom_choice}")
-
-        response.success = True
-        response.message = "Transform successfully calculated."
-        return response
 
     def move_relative_xy(self, goal_handle: ServerGoalHandle):
         """Execute the move to relative [x, y, yaw] action."""
@@ -324,19 +313,36 @@ class SpotROS2Driver(Node):
 
     def publish_robot_state(self):
         """Periodic publish robot data (if connected)."""
-        # detect and publish fiducial
+        # detect and publish fiducial transform
         fiducials = self.world_object_client.list_world_objects([world_object_pb2.WORLD_OBJECT_APRILTAG]).world_objects
         if fiducials:
             fiducial = fiducials[0]
-            tform_fiducial_odom = get_a_tform_b(fiducial.transforms_snapshot, "filtered_fiducial_200", self.odom_frame)
-            self.publish_static_transform( tform_fiducial_odom, "filtered_fiducial_200", f"odom_{self.odom_choice}")
-
-        # publish odom
-        robot_state: RobotState = self.robot_state_client.get_robot_state()
-        odom_tfrom_body = get_a_tform_b(robot_state.kinematic_state.transforms_snapshot, self.odom_frame, BODY_FRAME_NAME)
-        odom_vel_of_body = robot_state.kinematic_state.velocity_of_body_in_odom
-        self.publish_transform(odom_tfrom_body, f"odom_{self.odom_choice}", "base_link")
-        self.publish_odometry(odom_tfrom_body, odom_vel_of_body, f"odom_{self.odom_choice}", "base_link")
+            if self.odom_choice != "lidar":
+                tform_fiducial_odom = get_a_tform_b(fiducial.transforms_snapshot, "filtered_fiducial_200", self.odom_frame)
+                self.publish_static_transform(tform_fiducial_odom, "filtered_fiducial_200", f"odom_{self.odom_choice}")
+            else:
+                tform_base_fiducial = get_a_tform_b(fiducial.transforms_snapshot, BODY_FRAME_NAME, "filtered_fiducial_200")
+                # Listen to the TF broadcaster for: odom_lidar -> base_link
+                tf_odom_base = self.tf_buffer.lookup_transform(
+                    "odom_lidar",
+                    "base_link",
+                    rclpy.time.Time(),
+                )
+                quat_tmp = Quat(
+                    tf_odom_base.transform.rotation.w,
+                    tf_odom_base.transform.rotation.x,
+                    tf_odom_base.transform.rotation.y,
+                    tf_odom_base.transform.rotation.z,
+                )
+                tform_odom_base = SE3Pose(
+                    tf_odom_base.transform.translation.x,
+                    tf_odom_base.transform.translation.y,
+                    tf_odom_base.transform.translation.z,
+                    quat_tmp
+                )
+                tform_odom_fiducial = tform_odom_base * tform_base_fiducial
+                tform_fiducial_odom = tform_odom_fiducial.inverse()
+                self.publish_static_transform(tform_fiducial_odom, "filtered_fiducial_200", f"odom_lidar")
 
         # publish camera images
         request = build_image_request(
@@ -347,6 +353,15 @@ class SpotROS2Driver(Node):
         image_response = self.image_client.get_image([request])
         self.publish_image(image_response[0])
         self.publish_camera_info(image_response[0])
+
+        # TODO: if user select LiDAR odometry (which has to be provided externally), register the this coordinate frame to the spot TF tree
+        # other publish odom from the robot internal system
+        if self.odom_choice != "lidar":
+            robot_state: RobotState = self.robot_state_client.get_robot_state()
+            odom_tfrom_body = get_a_tform_b(robot_state.kinematic_state.transforms_snapshot, self.odom_frame, BODY_FRAME_NAME)
+            odom_vel_of_body = robot_state.kinematic_state.velocity_of_body_in_odom
+            self.publish_transform(odom_tfrom_body, f"odom_{self.odom_choice}", "base_link")
+            self.publish_odometry(odom_tfrom_body, odom_vel_of_body, f"odom_{self.odom_choice}", "base_link")
 
     def publish_odometry(self, odom_tfrom_body: SE3Pose, odom_vel_of_body: SE3Velocity, header: str, child: str):
         """Publish the odometry data."""
