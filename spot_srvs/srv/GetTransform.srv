@@ -1,5 +1,0 @@
-# Request
-string fiducial_name
----
-# Response
-geometry_msgs/TransformStamped transform

@@ -53,10 +53,10 @@ from tf2_ros.buffer import Buffer
 from tf2_ros import TransformListener
 
 from spot_action.action import MoveRelativeXY
+from spot_driver.spot_commander import SpotCommander
 from spot_driver.spot_image import SpotImagePublisher
 from spot_driver.spot_streams import SpotStreamer
 from spot_driver.spot_tf import SpotTFPublisher
-# from spot_srvs.srv import GetTransform
 
 
 class SpotROS2Driver(Node):
@@ -175,12 +175,14 @@ class SpotROS2Driver(Node):
         self.tf_publisher = SpotTFPublisher(self)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-
-        self.cmd_vel_subscriber = self.create_subscription(Twist, "cmd_vel", self.cmd_vel_callback, 10)
-
+        
         self.image_component = SpotImagePublisher(self)
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
         self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
+
+        # Create commander
+        self.commander = SpotCommander(self, self.command_client, self.robot_state_client, self.odom_frame)
+        self.cmd_vel_subscriber = self.create_subscription(Twist, "cmd_vel", self.commander.cmd_vel_callback, 10)
 
         robot_state_pub_group = MutuallyExclusiveCallbackGroup()
         self.robot_state_publisher = self.create_timer(
@@ -198,73 +200,13 @@ class SpotROS2Driver(Node):
             self,
             MoveRelativeXY,
             "move_relative_xy",
-            execute_callback=self.move_relative_xy,
+            execute_callback=self.commander.move_relative_xy,
             callback_group=action_group,
         )
 
         if self.use_streaming_client:
             self.streamer = SpotStreamer(self, self._shutdown_event)
             self.streamer.start(self.robot_state_streaming_client)
-
-    def move_relative_xy(self, goal_handle: ServerGoalHandle):
-        """Execute the move to relative [x, y, yaw] action."""
-        goal = goal_handle.request
-        self.get_logger().info(f"Executing goal: x={goal.x}, y={goal.y}, theta={goal.yaw}")
-
-        distance = math.sqrt(goal.x**2 + goal.y**2)
-        max_vel = 1.0  # https://github.com/boston-dynamics/spot-sdk/blob/master/protos/bosdyn/api/spot/robot_command.proto#L66
-        estimated_time = (distance / max_vel) + 5.0  # Add 5 second for safety margin
-
-        try:
-            transforms = self.robot_state_client.get_robot_state().kinematic_state.transforms_snapshot
-
-            # convert the goal pose from robot body frame to odom frame
-            body_tform_goal = SE2Pose(x=goal.x, y=goal.y, angle=goal.yaw)
-            odom_tform_body = get_se2_a_tform_b(transforms, self.odom_frame, BODY_FRAME_NAME)
-            odom_tfrom_goal = odom_tform_body * body_tform_goal
-
-            command = RobotCommandBuilder.synchro_se2_trajectory_point_command(
-                goal_x=odom_tfrom_goal.x,
-                goal_y=odom_tfrom_goal.y,
-                goal_heading=odom_tfrom_goal.angle,
-                frame_name=self.odom_frame,
-            )
-
-            cmd_id = self.command_client.robot_command(command, end_time_secs=time.time() + estimated_time)
-
-            # feedback_msg = MoveRelativeXY.Feedback()
-            while True:
-                if goal_handle.is_cancel_requested:
-                    goal_handle.canceled()
-                    self.get_logger().info("Goal canceled.")
-                    self.command_client.robot_command(RobotCommandBuilder.stop_command())
-                    return MoveRelativeXY.Result(success=False)
-
-                feedback = self.command_client.robot_command_feedback(cmd_id)
-                mobility_feedback = feedback.feedback.synchronized_feedback.mobility_command_feedback
-
-                if mobility_feedback.status != RobotCommandFeedbackStatus.STATUS_PROCESSING:
-                    self.get_logger().error("Failed to reach the goal.")
-                    goal_handle.abort()
-                    return MoveRelativeXY.Result(success=False)
-
-                # TODO: Add feedback publishing
-
-                traj_feedback = mobility_feedback.se2_trajectory_feedback
-                if (
-                    traj_feedback.status == traj_feedback.STATUS_AT_GOAL
-                    and traj_feedback.body_movement_status == traj_feedback.BODY_STATUS_SETTLED
-                ):
-                    self.get_logger().info("Arrived at the goal.")
-                    goal_handle.succeed()
-                    return MoveRelativeXY.Result(success=True)
-
-                time.sleep(0.1)  # Check status at 10 Hz
-
-        except (RpcError, ResponseError) as e:
-            self.get_logger().error(f"Error during action execution: {e}")
-            goal_handle.abort()
-            return MoveRelativeXY.Result(success=False)
 
     def publish_robot_state(self):
         """Periodic publish robot data (if connected)."""
@@ -297,8 +239,6 @@ class SpotROS2Driver(Node):
                         quat_tmp
                     )
                     tform_odom_fiducial = tform_odom_base * tform_base_fiducial
-                    # The transform is no longer inversed
-                    # tform_fiducial_odom = tform_odom_fiducial.inverse()
 
                     pose_msg = PoseStamped()
                     pose_msg.header.stamp = self.get_clock().now().to_msg()
@@ -342,17 +282,6 @@ class SpotROS2Driver(Node):
         odom_msg.pose.pose.orientation.w = odom_tfrom_body.rotation.w
 
         self.odom_publisher.publish(odom_msg)
-
-    def cmd_vel_callback(self, msg: Twist):
-        """Convert a Twist message to a robot velocity command and send it."""
-        v_x, v_y, v_rot = msg.linear.x, msg.linear.y, msg.angular.z
-        command = RobotCommandBuilder.synchro_velocity_command(v_x=v_x, v_y=v_y, v_rot=v_rot)
-        try:
-            # Send the command to the robot
-            self.command_client.robot_command(command, end_time_secs=time.time() + 0.5)
-            self.get_logger().debug(f"Sent velocity command: v_x={v_x}, v_y={v_y}, v_rot={v_rot}")
-        except (RpcError, ResponseError) as e:
-            self.get_logger().error(f"Failed to send velocity command: {e}")
 
     def stop_thread(self):
         self._shutdown_event.set()
