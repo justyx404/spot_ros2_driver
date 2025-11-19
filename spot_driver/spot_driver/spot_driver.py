@@ -54,8 +54,10 @@ from tf2_ros.buffer import Buffer
 from tf2_ros import TransformListener
 
 from spot_action.action import MoveRelativeXY
+from spot_driver.spot_image import SpotImagePublisher
+from spot_driver.spot_streams import SpotStreamer
 from spot_driver.spot_tf import SpotTFPublisher
-from spot_srvs.srv import GetTransform
+# from spot_srvs.srv import GetTransform
 
 
 class SpotROS2Driver(Node):
@@ -84,7 +86,7 @@ class SpotROS2Driver(Node):
             self.odom_frame = VISION_FRAME_NAME
         elif self.odom_choice == "lidar":
             # TODO: need to register the lidar odometry frame to the spot TF tree
-            self.odom_frame = ODOM_FRAME_NAME
+            self.odom_frame = "lidar"
         else:
             self.get_logger().error(f'Invalid odometry frame: {self.odom_choice}. Using default "kinematic".')
             self.odom_choice = "kinematic"
@@ -102,10 +104,6 @@ class SpotROS2Driver(Node):
         self.robot_state_client: Optional[RobotStateClient] = None
         self.command_client: Optional[RobotCommandClient] = None
         self.world_object_client: Optional[WorldObjectClient] = None
-        self.robot_state_stream_publisher: Optional[Timer] = None
-        self.robot_state_stream_thread: Optional[threading.Thread] = None
-        self.imu_publisher: Optional[rclpy.publisher.Publisher] = None
-        self.image_publisher: Optional[rclpy.publisher.Publisher] = None
 
         try:
             # Robot initialization
@@ -181,8 +179,7 @@ class SpotROS2Driver(Node):
 
         self.cmd_vel_subscriber = self.create_subscription(Twist, "cmd_vel", self.cmd_vel_callback, 10)
 
-        self.image_publisher = self.create_publisher(Image, "camera/image_raw", 10)
-        self.cam_info_publisher = self.create_publisher(CameraInfo, "camera/camera_info", 10)
+        self.image_component = SpotImagePublisher(self)
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
         self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
 
@@ -217,16 +214,8 @@ class SpotROS2Driver(Node):
         )
 
         if self.use_streaming_client:
-            self.robot_state_stream = None
-            self.robot_state_stream_thread = threading.Thread(target=self.handle_state_streaming, daemon=True)
-            self.robot_state_stream_thread.start()
-            self.stream_lock = threading.Lock()
-
-            self.imu_publisher = self.create_publisher(Imu, "imu", 10)
-            robot_state_stream_group = MutuallyExclusiveCallbackGroup()
-            self.robot_state_stream_publisher = self.create_timer(
-                0.01, self.stream_robot_state, callback_group=robot_state_stream_group
-            )
+            self.streamer = SpotStreamer(self, self._shutdown_event)
+            self.streamer.start(self.robot_state_streaming_client)
 
     def move_relative_xy(self, goal_handle: ServerGoalHandle):
         """Execute the move to relative [x, y, yaw] action."""
@@ -288,30 +277,6 @@ class SpotROS2Driver(Node):
             goal_handle.abort()
             return MoveRelativeXY.Result(success=False)
 
-    def handle_state_streaming(self):
-        """Stream robot state from the robot at 333Hz"""
-        try:
-            robot_state_stream = self.robot_state_streaming_client.get_robot_state_stream()
-            self.get_logger().info("Started robot state streaming...")
-            for robot_state in robot_state_stream:
-                if self._shutdown_event.is_set():
-                    break
-
-                if robot_state.inertial_state and robot_state.inertial_state.packets:
-                    with self.stream_lock:
-                        self.robot_state_stream = robot_state
-        except Exception as e:
-            self.get_logger().error(f"Robot state streaming error: {e}")
-
-    def stream_robot_state(self):
-        """Publish the latest robot state at 100Hz."""
-        if self.robot_state_stream is None:
-            return
-
-        with self.stream_lock:
-            imu_state = self.robot_state_stream.inertial_state
-            self.publish_imu(imu_state)
-
     def publish_robot_state(self):
         """Periodic publish robot data (if connected)."""
         # detect and publish fiducial transform
@@ -361,14 +326,7 @@ class SpotROS2Driver(Node):
                     self.get_logger().warn(f"Could not look up transform from 'odom_lidar' to 'base_link': {e}")
 
         # publish camera images
-        request = build_image_request(
-            "frontleft_fisheye_image",
-            pixel_format=image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U8,
-            image_format=image_pb2.Image.FORMAT_RAW,
-        )
-        image_response = self.image_client.get_image([request])
-        self.publish_image(image_response[0])
-        self.publish_camera_info(image_response[0])
+        self.image_component.publish_image_and_info(self.image_client)
 
         # TODO: if user select LiDAR odometry (which has to be provided externally), register the this coordinate frame to the spot TF tree
         # other publish odom from the robot internal system
@@ -395,78 +353,6 @@ class SpotROS2Driver(Node):
         odom_msg.pose.pose.orientation.w = odom_tfrom_body.rotation.w
 
         self.odom_publisher.publish(odom_msg)
-
-    def publish_camera_info(self, image_response):
-        frame_id = image_response.shot.frame_name_image_sensor
-
-        msg = CameraInfo()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = frame_id
-        msg.height = image_response.source.rows
-        msg.width = image_response.source.cols
-        msg.distortion_model = "plumb_bob"
-        msg.d = [0.0, 0.0, 0.0, 0.0, 0.0]  # Assuming no distortion; replace with actual values if available
-        fx = image_response.source.pinhole.intrinsics.focal_length.x
-        fy = image_response.source.pinhole.intrinsics.focal_length.y
-        cx = image_response.source.pinhole.intrinsics.principal_point.x
-        cy = image_response.source.pinhole.intrinsics.principal_point.y
-        msg.k = [fx,  0.0, cx,
-                 0.0, fy,  cy,
-                 0.0, 0.0, 1.0]
-
-        msg.r = [1.0, 0.0, 0.0,
-                 0.0, 1.0, 0.0,
-                 0.0, 0.0, 1.0]
-    
-        msg.p = [fx,  0.0, cx,  0.0,
-                 0.0, fy,  cy,  0.0,
-                 0.0, 0.0, 1.0, 0.0]
-        
-        self.cam_info_publisher.publish(msg)
-
-    def publish_image(self, image_response):
-        """
-        Converts a Spot SDK GREYSCALE_U8 image_response to a ROS 2 Image message and publishes it.
-        """
-        image = image_response.shot.image
-        frame_id = image_response.shot.frame_name_image_sensor
-
-        # Create the ROS 2 Image message
-        image_msg = Image()
-        image_msg.header.stamp = self.get_clock().now().to_msg()
-        image_msg.header.frame_id = frame_id
-        image_msg.height = image.rows
-        image_msg.width = image.cols
-        image_msg.encoding = "mono8"
-        image_msg.step = image.cols
-        image_msg.is_bigendian = False
-        image_msg.data = image.data
-
-        # Publish the message
-        self.image_publisher.publish(image_msg)
-
-    def publish_imu(self, imu_state: ImuState):
-        """Publish the IMU data."""
-        packet = imu_state.packets[-1]
-
-        imu_msg = Imu()
-        imu_msg.header.stamp = self.get_clock().now().to_msg()
-        imu_msg.header.frame_id = "base_link"
-
-        imu_msg.orientation.x = packet.odom_rot_link.x
-        imu_msg.orientation.y = packet.odom_rot_link.y
-        imu_msg.orientation.z = packet.odom_rot_link.z
-        imu_msg.orientation.w = packet.odom_rot_link.w
-
-        imu_msg.angular_velocity.x = packet.angular_velocity_rt_odom_in_link_frame.x
-        imu_msg.angular_velocity.y = packet.angular_velocity_rt_odom_in_link_frame.y
-        imu_msg.angular_velocity.z = packet.angular_velocity_rt_odom_in_link_frame.z
-
-        imu_msg.linear_acceleration.x = packet.acceleration_rt_odom_in_link_frame.x
-        imu_msg.linear_acceleration.y = packet.acceleration_rt_odom_in_link_frame.y
-        imu_msg.linear_acceleration.z = packet.acceleration_rt_odom_in_link_frame.z
-
-        self.imu_publisher.publish(imu_msg)
 
     def cmd_vel_callback(self, msg: Twist):
         """Convert a Twist message to a robot velocity command and send it."""
