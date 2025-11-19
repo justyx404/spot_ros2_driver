@@ -51,9 +51,10 @@ from rclpy.node import Node
 from rclpy.timer import Timer
 from sensor_msgs.msg import CameraInfo, Image, Imu
 from tf2_ros.buffer import Buffer
-from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster, TransformListener
+from tf2_ros import TransformListener
 
 from spot_action.action import MoveRelativeXY
+from spot_driver.spot_tf import SpotTFPublisher
 from spot_srvs.srv import GetTransform
 
 
@@ -174,8 +175,7 @@ class SpotROS2Driver(Node):
             raise
 
         # ROS 2 publishers and subscribers
-        self.static_tf_broadcaster = StaticTransformBroadcaster(self)
-        self.tf_broadcaster = TransformBroadcaster(self)
+        self.tf_publisher = SpotTFPublisher(self)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
@@ -203,7 +203,7 @@ class SpotROS2Driver(Node):
         cam_tform_body = get_a_tform_b(
             image_response[0].shot.transforms_snapshot, BODY_FRAME_NAME, image_response[0].shot.frame_name_image_sensor
         )
-        self.publish_static_transform(cam_tform_body, "base_link", "frontleft_fisheye")
+        self.tf_publisher.publish_static_transform(cam_tform_body, "base_link", "frontleft_fisheye")
         self.get_logger().info(f"Published {image_response[0].shot.frame_name_image_sensor} TF.")
 
         # Action server initialization
@@ -320,7 +320,7 @@ class SpotROS2Driver(Node):
             fiducial = fiducials[0]
             if self.odom_choice != "lidar":
                 tform_fiducial_odom = get_a_tform_b(fiducial.transforms_snapshot, "filtered_fiducial_200", self.odom_frame)
-                self.publish_static_transform(tform_fiducial_odom, "filtered_fiducial_200", f"odom_{self.odom_choice}")
+                self.tf_publisher.publish_static_transform(tform_fiducial_odom, "filtered_fiducial_200", f"odom_{self.odom_choice}")
             else:
                 tform_base_fiducial = get_a_tform_b(fiducial.transforms_snapshot, BODY_FRAME_NAME, "filtered_fiducial_200")
                 # Listen to the TF broadcaster for: odom_lidar -> base_link
@@ -376,7 +376,7 @@ class SpotROS2Driver(Node):
             robot_state: RobotState = self.robot_state_client.get_robot_state()
             odom_tfrom_body = get_a_tform_b(robot_state.kinematic_state.transforms_snapshot, self.odom_frame, BODY_FRAME_NAME)
             odom_vel_of_body = robot_state.kinematic_state.velocity_of_body_in_odom
-            self.publish_transform(odom_tfrom_body, f"odom_{self.odom_choice}", "base_link")
+            self.tf_publisher.publish_transform(odom_tfrom_body, f"odom_{self.odom_choice}", "base_link")
             self.publish_odometry(odom_tfrom_body, odom_vel_of_body, f"odom_{self.odom_choice}", "base_link")
 
     def publish_odometry(self, odom_tfrom_body: SE3Pose, odom_vel_of_body: SE3Velocity, header: str, child: str):
@@ -395,37 +395,6 @@ class SpotROS2Driver(Node):
         odom_msg.pose.pose.orientation.w = odom_tfrom_body.rotation.w
 
         self.odom_publisher.publish(odom_msg)
-
-    def publish_transform(self, tfrom: SE3Pose, header: str, child: str):  # type: ignore
-        """Publish the transform from ODOM to BODY frame."""
-        t = TransformStamped()
-        # TODO: sync with the robot's internal time
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = header
-        t.child_frame_id = child
-        t.transform.translation.x = tfrom.position.x
-        t.transform.translation.y = tfrom.position.y
-        t.transform.translation.z = tfrom.position.z
-        t.transform.rotation.x = tfrom.rotation.x
-        t.transform.rotation.y = tfrom.rotation.y
-        t.transform.rotation.z = tfrom.rotation.z
-        t.transform.rotation.w = tfrom.rotation.w
-        self.tf_broadcaster.sendTransform(t)
-
-    def publish_static_transform(self, tfrom: SE3Pose, header: str, child: str):  # type: ignore
-        """Publish the transform from ODOM to BODY frame."""
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = header
-        t.child_frame_id = child
-        t.transform.translation.x = tfrom.position.x
-        t.transform.translation.y = tfrom.position.y
-        t.transform.translation.z = tfrom.position.z
-        t.transform.rotation.x = tfrom.rotation.x
-        t.transform.rotation.y = tfrom.rotation.y
-        t.transform.rotation.z = tfrom.rotation.z
-        t.transform.rotation.w = tfrom.rotation.w
-        self.static_tf_broadcaster.sendTransform(t)
 
     def publish_camera_info(self, image_response):
         frame_id = image_response.shot.frame_name_image_sensor
