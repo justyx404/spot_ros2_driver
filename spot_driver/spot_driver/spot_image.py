@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from bosdyn.api import image_pb2
+from bosdyn.client.frame_helpers import BODY_FRAME_NAME, get_a_tform_b # Added imports
 from bosdyn.client.image import ImageClient, build_image_request
+from bosdyn.client.math_helpers import SE3Pose # Added import
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 
@@ -27,6 +29,22 @@ class SpotImagePublisher:
         self._node = node
         self._image_publisher = self._node.create_publisher(Image, "camera/image_raw", 10)
         self._cam_info_publisher = self._node.create_publisher(CameraInfo, "camera/camera_info", 10)
+
+    def get_camera_transform_from_body(self, image_client: ImageClient) -> SE3Pose:
+        """
+        Retrieves the static transform from the robot's body frame to the camera frame.
+        """
+        request = build_image_request(
+            "frontleft_fisheye_image",
+            pixel_format=image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U8,
+            image_format=image_pb2.Image.FORMAT_RAW,
+        )
+        image_response = image_client.get_image([request])
+        # Assuming the first image response contains the necessary transform
+        cam_tform_body = get_a_tform_b(
+            image_response[0].shot.transforms_snapshot, BODY_FRAME_NAME, image_response[0].shot.frame_name_image_sensor
+        )
+        return cam_tform_body
 
     def publish_image_and_info(self, image_client: ImageClient):
         """Get an image from the robot and publish it with its camera info."""

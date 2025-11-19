@@ -22,7 +22,6 @@ from typing import Optional
 import bosdyn.client
 import bosdyn.client.util
 import rclpy
-from bosdyn.api import image_pb2
 from bosdyn.api.basic_command_pb2 import RobotCommandFeedbackStatus
 from bosdyn.api.robot_state_pb2 import ImuState, RobotState
 from bosdyn.client import ResponseError, RpcError
@@ -34,7 +33,7 @@ from bosdyn.client.frame_helpers import (
     get_a_tform_b,
     get_se2_a_tform_b,
 )
-from bosdyn.client.image import ImageClient, build_image_request
+from bosdyn.client.image import ImageClient
 from bosdyn.client.lease import Error as LeaseError
 from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
 from bosdyn.client.math_helpers import SE2Pose, SE3Pose, SE3Velocity, Quat
@@ -183,25 +182,15 @@ class SpotROS2Driver(Node):
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
         self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
 
-        # NOTE: DDS can only suport timer periond 0.5s or higher, need to use Zenoh 
-        # middleware to achieve 0.1s
         robot_state_pub_group = MutuallyExclusiveCallbackGroup()
         self.robot_state_publisher = self.create_timer(
             0.1, self.publish_robot_state, callback_group=robot_state_pub_group
         )
 
         # broadcast camera frame as static TF
-        request = build_image_request(
-            "frontleft_fisheye_image",
-            pixel_format=image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U8,
-            image_format=image_pb2.Image.FORMAT_RAW,
-        )
-        image_response = self.image_client.get_image([request])
-        cam_tform_body = get_a_tform_b(
-            image_response[0].shot.transforms_snapshot, BODY_FRAME_NAME, image_response[0].shot.frame_name_image_sensor
-        )
+        cam_tform_body = self.image_component.get_camera_transform_from_body(self.image_client)
         self.tf_publisher.publish_static_transform(cam_tform_body, "base_link", "frontleft_fisheye")
-        self.get_logger().info(f"Published {image_response[0].shot.frame_name_image_sensor} TF.")
+        self.get_logger().info("Published frontleft_fisheye TF.")
 
         # Action server initialization
         action_group = MutuallyExclusiveCallbackGroup()
