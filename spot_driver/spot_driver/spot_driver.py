@@ -41,7 +41,7 @@ from bosdyn.client.math_helpers import SE2Pose, SE3Pose, SE3Velocity, Quat
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient, blocking_stand
 from bosdyn.client.robot_state import RobotStateClient, RobotStateStreamingClient
 from bosdyn.client.world_object import WorldObjectClient, world_object_pb2
-from geometry_msgs.msg import TransformStamped, Twist
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionServer
 from rclpy.action.server import ServerGoalHandle
@@ -184,6 +184,7 @@ class SpotROS2Driver(Node):
         self.image_publisher = self.create_publisher(Image, "camera/image_raw", 10)
         self.cam_info_publisher = self.create_publisher(CameraInfo, "camera/camera_info", 10)
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
+        self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
 
         # NOTE: DDS can only suport timer periond 0.5s or higher, need to use Zenoh 
         # middleware to achieve 0.1s
@@ -323,26 +324,41 @@ class SpotROS2Driver(Node):
             else:
                 tform_base_fiducial = get_a_tform_b(fiducial.transforms_snapshot, BODY_FRAME_NAME, "filtered_fiducial_200")
                 # Listen to the TF broadcaster for: odom_lidar -> base_link
-                tf_odom_base = self.tf_buffer.lookup_transform(
-                    "odom_lidar",
-                    "base_link",
-                    rclpy.time.Time(),
-                )
-                quat_tmp = Quat(
-                    tf_odom_base.transform.rotation.w,
-                    tf_odom_base.transform.rotation.x,
-                    tf_odom_base.transform.rotation.y,
-                    tf_odom_base.transform.rotation.z,
-                )
-                tform_odom_base = SE3Pose(
-                    tf_odom_base.transform.translation.x,
-                    tf_odom_base.transform.translation.y,
-                    tf_odom_base.transform.translation.z,
-                    quat_tmp
-                )
-                tform_odom_fiducial = tform_odom_base * tform_base_fiducial
-                tform_fiducial_odom = tform_odom_fiducial.inverse()
-                self.publish_static_transform(tform_fiducial_odom, "filtered_fiducial_200", f"odom_lidar")
+                try:
+                    tf_odom_base = self.tf_buffer.lookup_transform(
+                        "odom_lidar",
+                        "base_link",
+                        rclpy.time.Time(),
+                    )
+                    quat_tmp = Quat(
+                        tf_odom_base.transform.rotation.w,
+                        tf_odom_base.transform.rotation.x,
+                        tf_odom_base.transform.rotation.y,
+                        tf_odom_base.transform.rotation.z,
+                    )
+                    tform_odom_base = SE3Pose(
+                        tf_odom_base.transform.translation.x,
+                        tf_odom_base.transform.translation.y,
+                        tf_odom_base.transform.translation.z,
+                        quat_tmp
+                    )
+                    tform_odom_fiducial = tform_odom_base * tform_base_fiducial
+                    # The transform is no longer inversed
+                    # tform_fiducial_odom = tform_odom_fiducial.inverse()
+
+                    pose_msg = PoseStamped()
+                    pose_msg.header.stamp = self.get_clock().now().to_msg()
+                    pose_msg.header.frame_id = "odom_lidar" # The pose is of fiducial in the odom_lidar frame
+                    pose_msg.pose.position.x = tform_odom_fiducial.x
+                    pose_msg.pose.position.y = tform_odom_fiducial.y
+                    pose_msg.pose.position.z = tform_odom_fiducial.z
+                    pose_msg.pose.orientation.x = tform_odom_fiducial.rotation.x
+                    pose_msg.pose.orientation.y = tform_odom_fiducial.rotation.y
+                    pose_msg.pose.orientation.z = tform_odom_fiducial.rotation.z
+                    pose_msg.pose.orientation.w = tform_odom_fiducial.rotation.w
+                    self.fiducial_pose_publisher.publish(pose_msg)
+                except Exception as e:
+                    self.get_logger().warn(f"Could not look up transform from 'odom_lidar' to 'base_link': {e}")
 
         # publish camera images
         request = build_image_request(
