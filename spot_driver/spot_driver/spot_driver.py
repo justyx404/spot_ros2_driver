@@ -20,8 +20,6 @@ import time
 from typing import Optional
 
 import bosdyn.client
-import bosdyn.client.util
-import rclpy
 from bosdyn.api.basic_command_pb2 import RobotCommandFeedbackStatus
 from bosdyn.api.robot_state_pb2 import ImuState, RobotState
 from bosdyn.client import ResponseError, RpcError
@@ -40,17 +38,19 @@ from bosdyn.client.math_helpers import SE2Pose, SE3Pose, SE3Velocity, Quat
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient, blocking_stand
 from bosdyn.client.robot_state import RobotStateClient, RobotStateStreamingClient
 from bosdyn.client.world_object import WorldObjectClient, world_object_pb2
-from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
-from nav_msgs.msg import Odometry
+
+import rclpy
 from rclpy.action import ActionServer
 from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.timer import Timer
-from sensor_msgs.msg import CameraInfo, Image, Imu
 from tf2_ros.buffer import Buffer
 from tf2_ros import TransformListener
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import CameraInfo, Image, Imu
 
 from spot_action.action import MoveRelativeXY
 from spot_driver.spot_commander import SpotCommander
@@ -84,7 +84,6 @@ class SpotROS2Driver(Node):
         elif self.odom_choice == "vision":
             self.odom_frame = VISION_FRAME_NAME
         elif self.odom_choice == "lidar":
-            # TODO: need to register the lidar odometry frame to the spot TF tree
             self.odom_frame = "lidar"
         else:
             self.get_logger().error(f'Invalid odometry frame: {self.odom_choice}. Using default "kinematic".')
@@ -118,8 +117,6 @@ class SpotROS2Driver(Node):
 
             self.robot = sdk.create_robot(hostname)
 
-            # NOTE: Must have both BOSDYN_CLIENT_USERNAME and BOSDYN_CLIENT_PASSWORD environment variables set
-            # bosdyn.client.util.authenticate(self.robot)
             # NOTE: username and password are manually provided
             self.robot.authenticate(username, password)
 
@@ -174,7 +171,7 @@ class SpotROS2Driver(Node):
         # ROS 2 publishers and subscribers
         self.tf_publisher = SpotTFPublisher(self)
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        # self.tf_listener = TransformListener(self.tf_buffer, self)
         
         self.image_component = SpotImagePublisher(self)
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
@@ -226,17 +223,16 @@ class SpotROS2Driver(Node):
                         "base_link",
                         rclpy.time.Time(),
                     )
-                    quat_tmp = Quat(
-                        tf_odom_base.transform.rotation.w,
-                        tf_odom_base.transform.rotation.x,
-                        tf_odom_base.transform.rotation.y,
-                        tf_odom_base.transform.rotation.z,
-                    )
                     tform_odom_base = SE3Pose(
                         tf_odom_base.transform.translation.x,
                         tf_odom_base.transform.translation.y,
                         tf_odom_base.transform.translation.z,
-                        quat_tmp
+                        Quat(
+                            tf_odom_base.transform.rotation.w,
+                            tf_odom_base.transform.rotation.x,
+                            tf_odom_base.transform.rotation.y,
+                            tf_odom_base.transform.rotation.z,
+                        )
                     )
                     tform_odom_fiducial = tform_odom_base * tform_base_fiducial
 
