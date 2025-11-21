@@ -1,4 +1,4 @@
-"""Launch file for the Spot ROS2 Minimal Driver node."""
+"""Launch file for the Spot ROS2 Driver node."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction
@@ -51,7 +51,7 @@ def generate_launch_description():
 
     # Spot driver node
     spot_driver_node = Node(
-        package="spot_minimal_driver",
+        package="spot_driver",
         executable="spot_driver_node",
         name="spot_driver_node",
         output="screen",
@@ -75,7 +75,7 @@ def generate_launch_description():
         name="rviz2",
         output="screen",
         condition=IfCondition(rviz),
-        arguments=["-d", [FindPackageShare("spot_minimal_driver"), "/config/", rviz_config]],
+        arguments=["-d", [FindPackageShare("_driver"), "/config/", rviz_config]],
     )
 
     # Group all nodes

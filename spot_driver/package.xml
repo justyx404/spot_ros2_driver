@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>spot_minimal_driver</name>
+  <name>spot_driver</name>
   <version>0.0.1</version>
-  <description>A minimal ROS 2 driver for Boston Dynamics Spot robot</description>
+  <description>A ROS 2 driver for Boston Dynamics Spot robot</description>
   <maintainer email="ygao@missouri.edu">root</maintainer>
   <license>Apache-2.0</license>
 

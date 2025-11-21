@@ -1,10 +1,8 @@
-"""Setup script for the Spot Minimal Driver package."""
-
 from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = "spot_minimal_driver"
+package_name = "spot_driver"
 
 setup(
     name=package_name,
@@ -21,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer="Yixiang Gao",
     maintainer_email="ygao@missouri.edu",
-    description="A minimal ROS 2 driver for Boston Dynamics Spot robot",
+    description="A ROS 2 driver for Boston Dynamics Spot robot",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={

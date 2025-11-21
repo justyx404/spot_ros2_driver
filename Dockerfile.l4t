@@ -15,7 +15,7 @@ WORKDIR /ros2_ws
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-COPY . src/spot_ros2_minimal_driver
+COPY . src/spot_ros2_driver
 
 RUN source /opt/ros/humble/setup.bash && \
     sudo rosdep install --from-paths src --ignore-src -r -y

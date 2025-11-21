@@ -1,6 +1,6 @@
 ## To launch the driver
 ```
-ros2 launch spot_minimal_driver spot_driver.launch.py
+ros2 launch spot_driver spot_driver.launch.py
 ```
 
 ```
