@@ -154,7 +154,7 @@ class SpotROS2Driver(Node):
             self.estop_keep_alive = EstopKeepAlive(estop_endpoint)
             self.get_logger().info("Acquired E-Stop.")
 
-            time.sleep(3.0)
+            time.sleep(5.0)
 
             # Power on and Stand Robot
             self.robot.power_on(timeout_sec=20)
@@ -171,14 +171,14 @@ class SpotROS2Driver(Node):
         # ROS 2 publishers and subscribers
         self.tf_publisher = SpotTFPublisher(self)
         self.tf_buffer = Buffer()
-        # self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         
         self.image_component = SpotImagePublisher(self)
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
         self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
 
         # Create commander
-        self.commander = SpotCommander(self, self.command_client, self.robot_state_client, self.odom_frame)
+        self.commander = SpotCommander(self, self.command_client, self.robot_state_client, self.odom_frame, self.tf_buffer)
         self.cmd_vel_subscriber = self.create_subscription(Twist, "cmd_vel", self.commander.cmd_vel_callback, 10)
 
         robot_state_pub_group = MutuallyExclusiveCallbackGroup()
