@@ -48,7 +48,7 @@ from rclpy.node import Node
 from rclpy.timer import Timer
 from tf2_ros.buffer import Buffer
 from tf2_ros import TransformListener
-from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist, PoseArray, Pose
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CameraInfo, Image, Imu
 
@@ -175,7 +175,8 @@ class SpotROS2Driver(Node):
         
         self.image_component = SpotImagePublisher(self)
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
-        self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
+        # self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
+        self.fiducial_pose_array_publisher = self.create_publisher(PoseArray, "fiducial_poses", 10)
 
         # Create commander
         self.commander = SpotCommander(self, self.command_client, self.robot_state_client, self.odom_frame, self.tf_buffer)
@@ -207,50 +208,45 @@ class SpotROS2Driver(Node):
 
     def publish_robot_state(self):
         """Periodic publish robot data (if connected)."""
-        # detect and publish fiducial transform
-        fiducials = self.world_object_client.list_world_objects([world_object_pb2.WORLD_OBJECT_APRILTAG]).world_objects
+        # ---------------------------------------------------------------------
+        # 1. FIDUCIAL (APRILTAG) PROCESSING
+        # ---------------------------------------------------------------------
+        fiducials = self.world_object_client.list_world_objects(
+            [world_object_pb2.WORLD_OBJECT_APRILTAG]
+        ).world_objects
+
         if fiducials:
-            fiducial = fiducials[0]
-            if self.odom_choice != "lidar":
-                tform_fiducial_odom = get_a_tform_b(fiducial.transforms_snapshot, "filtered_fiducial_200", self.odom_frame)
-                self.tf_publisher.publish_static_transform(tform_fiducial_odom, "filtered_fiducial_200", f"odom_{self.odom_choice}")
-            else:
-                tform_base_fiducial = get_a_tform_b(fiducial.transforms_snapshot, BODY_FRAME_NAME, "filtered_fiducial_200")
-                # Listen to the TF broadcaster for: odom_lidar -> base_link
-                try:
-                    tf_odom_base = self.tf_buffer.lookup_transform(
-                        "odom_lidar",
-                        "base_link",
-                        rclpy.time.Time(),
-                    )
-                    tform_odom_base = SE3Pose(
-                        tf_odom_base.transform.translation.x,
-                        tf_odom_base.transform.translation.y,
-                        tf_odom_base.transform.translation.z,
-                        Quat(
-                            tf_odom_base.transform.rotation.w,
-                            tf_odom_base.transform.rotation.x,
-                            tf_odom_base.transform.rotation.y,
-                            tf_odom_base.transform.rotation.z,
-                        )
-                    )
-                    tform_odom_fiducial = tform_odom_base * tform_base_fiducial
+            pose_array_msg = PoseArray()
+            pose_array_msg.header.stamp = self.get_clock().now().to_msg()
+            target_frame_id = f"odom_{self.odom_choice}" if self.odom_choice != "lidar" else "odom_lidar"
+            pose_array_msg.header.frame_id = target_frame_id
 
-                    pose_msg = PoseStamped()
-                    pose_msg.header.stamp = self.get_clock().now().to_msg()
-                    pose_msg.header.frame_id = "odom_lidar" # The pose is of fiducial in the odom_lidar frame
-                    pose_msg.pose.position.x = tform_odom_fiducial.x
-                    pose_msg.pose.position.y = tform_odom_fiducial.y
-                    pose_msg.pose.position.z = tform_odom_fiducial.z
-                    pose_msg.pose.orientation.x = tform_odom_fiducial.rotation.x
-                    pose_msg.pose.orientation.y = tform_odom_fiducial.rotation.y
-                    pose_msg.pose.orientation.z = tform_odom_fiducial.rotation.z
-                    pose_msg.pose.orientation.w = tform_odom_fiducial.rotation.w
-                    self.fiducial_pose_publisher.publish(pose_msg)
-                except Exception as e:
-                    self.get_logger().warn(f"Could not look up transform from 'odom_lidar' to 'base_link': {e}")
+            for fiducial in fiducials:
+                raw_name = fiducial.name 
+                tag_id_str = raw_name.split('_')[-1]
+                tag_id = int(tag_id_str)
+                fiducial_frame = f"filtered_fiducial_{tag_id}"
 
-        # publish camera images
+                final_se3_pose = None
+                if self.odom_choice != "lidar":
+                    # get transform: Tag -> Odom (computed by Spot internally)
+                    final_se3_pose = get_a_tform_b(
+                        fiducial.transforms_snapshot, 
+                        self.odom_frame,
+                        fiducial_frame
+                    )
+
+                if final_se3_pose:
+                    ros_pose = self._bosdyn_pose_to_ros_pose(final_se3_pose)
+                    pose_array_msg.poses.append(ros_pose)
+
+            # Publish if we found any tags
+            if pose_array_msg.poses:
+                self.fiducial_pose_array_publisher.publish(pose_array_msg)
+
+        # ---------------------------------------------------------------------
+        # 2. IMAGE PUBLISHING
+        # ---------------------------------------------------------------------
         self.image_component.publish_image_and_info(self.image_client)
 
         # TODO: if user select LiDAR odometry (which has to be provided externally), register the this coordinate frame to the spot TF tree
@@ -278,6 +274,19 @@ class SpotROS2Driver(Node):
         odom_msg.pose.pose.orientation.w = odom_tfrom_body.rotation.w
 
         self.odom_publisher.publish(odom_msg)
+
+    def _bosdyn_pose_to_ros_pose(self, bosdyn_pose: SE3Pose) -> Pose:
+        """Helper to convert Bosdyn SE3Pose to ROS geometry_msgs/Pose."""
+        ros_pose = Pose()
+        ros_pose.position.x = bosdyn_pose.position.x
+        ros_pose.position.y = bosdyn_pose.position.y
+        ros_pose.position.z = bosdyn_pose.position.z
+        ros_pose.orientation.x = bosdyn_pose.rotation.x
+        ros_pose.orientation.y = bosdyn_pose.rotation.y
+        ros_pose.orientation.z = bosdyn_pose.rotation.z
+        ros_pose.orientation.w = bosdyn_pose.rotation.w
+
+        return ros_pose
 
     def stop_thread(self):
         self._shutdown_event.set()
