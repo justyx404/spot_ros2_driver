@@ -235,6 +235,35 @@ class SpotROS2Driver(Node):
                         self.odom_frame,
                         fiducial_frame
                     )
+                else:
+                    tform_body_fiducial = get_a_tform_b(
+                        fiducial.transforms_snapshot, 
+                        BODY_FRAME_NAME, 
+                        fiducial_frame
+                    )
+
+                    try:
+                        tf_odom_base = self.tf_buffer.lookup_transform(
+                            "odom_lidar",
+                            "base_link",
+                            rclpy.time.Time(),
+                        )
+
+                        tform_odom_base = SE3Pose(
+                            tf_odom_base.transform.translation.x,
+                            tf_odom_base.transform.translation.y,
+                            tf_odom_base.transform.translation.z,
+                            Quat(
+                                tf_odom_base.transform.rotation.w,
+                                tf_odom_base.transform.rotation.x,
+                                tf_odom_base.transform.rotation.y,
+                                tf_odom_base.transform.rotation.z,
+                            )
+                        )
+
+                        final_se3_pose = tform_odom_base * tform_body_fiducial
+                    except Exception as e:
+                        self.get_logger().warn(f"Could not look up transform from 'odom_lidar' to 'base_link': {e}")
 
                 if final_se3_pose:
                     ros_pose = self._bosdyn_pose_to_ros_pose(final_se3_pose)
@@ -249,8 +278,6 @@ class SpotROS2Driver(Node):
         # ---------------------------------------------------------------------
         self.image_component.publish_image_and_info(self.image_client)
 
-        # TODO: if user select LiDAR odometry (which has to be provided externally), register the this coordinate frame to the spot TF tree
-        # other publish odom from the robot internal system
         if self.odom_choice != "lidar":
             robot_state: RobotState = self.robot_state_client.get_robot_state()
             odom_tfrom_body = get_a_tform_b(robot_state.kinematic_state.transforms_snapshot, self.odom_frame, BODY_FRAME_NAME)
