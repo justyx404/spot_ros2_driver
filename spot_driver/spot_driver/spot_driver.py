@@ -188,9 +188,18 @@ class SpotROS2Driver(Node):
         )
 
         # broadcast camera frame as static TF
-        cam_tform_body = self.image_component.get_camera_transform_from_body(self.image_client)
-        self.tf_publisher.publish_static_transform(cam_tform_body, "base_link", "frontleft_fisheye")
-        self.get_logger().info("Published frontleft_fisheye TF.")
+        static_transforms = []
+        
+        cam_tform_body = self.image_component.get_camera_transform_from_body(self.image_client, "frontleft_fisheye_image")
+        static_transforms.append((cam_tform_body, "base_link", "frontleft_fisheye"))
+        self.get_logger().info("Collected frontleft_fisheye TF.")
+
+        cam_tform_body = self.image_component.get_camera_transform_from_body(self.image_client, "frontright_fisheye_image")
+        static_transforms.append((cam_tform_body, "base_link", "frontright_fisheye"))
+        self.get_logger().info("Collected frontright_fisheye TF.")
+        
+        self.tf_publisher.publish_static_transforms(static_transforms)
+        self.get_logger().info("Published all static TFs.")
 
         # Action server initialization
         action_group = MutuallyExclusiveCallbackGroup()
@@ -278,6 +287,10 @@ class SpotROS2Driver(Node):
         # ---------------------------------------------------------------------
         self.image_component.publish_image_and_info(self.image_client)
 
+
+        # ---------------------------------------------------------------------
+        # 3. IMAGE PUBLISHING
+        # ---------------------------------------------------------------------
         if self.odom_choice != "lidar":
             robot_state: RobotState = self.robot_state_client.get_robot_state()
             odom_tfrom_body = get_a_tform_b(robot_state.kinematic_state.transforms_snapshot, self.odom_frame, BODY_FRAME_NAME)

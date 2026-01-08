@@ -58,3 +58,27 @@ class SpotTFPublisher:
         t.transform.rotation.z = tfrom.rotation.z
         t.transform.rotation.w = tfrom.rotation.w
         self._static_tf_broadcaster.sendTransform(t)
+
+    def publish_static_transforms(self, transforms):
+        """Publish a list of static transforms.
+
+        Args:
+            transforms: List of tuples (tfrom: SE3Pose, header: str, child: str)
+        """
+        tf_msgs = []
+        now = self._node.get_clock().now().to_msg()
+        for tfrom, header, child in transforms:
+            t = TransformStamped()
+            t.header.stamp = now
+            t.header.frame_id = header
+            t.child_frame_id = child
+            t.transform.translation.x = tfrom.position.x
+            t.transform.translation.y = tfrom.position.y
+            t.transform.translation.z = tfrom.position.z
+            t.transform.rotation.x = tfrom.rotation.x
+            t.transform.rotation.y = tfrom.rotation.y
+            t.transform.rotation.z = tfrom.rotation.z
+            t.transform.rotation.w = tfrom.rotation.w
+            tf_msgs.append(t)
+        
+        self._static_tf_broadcaster.sendTransform(tf_msgs)
