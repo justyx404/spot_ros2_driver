@@ -27,6 +27,7 @@ class SpotTFPublisher:
         self._node = node
         self._tf_broadcaster = TransformBroadcaster(self._node)
         self._static_tf_broadcaster = StaticTransformBroadcaster(self._node)
+        self._static_transforms_cache = {}
 
     def publish_transform(self, tfrom: SE3Pose, header: str, child: str):
         """Publish the transform from ODOM to BODY frame."""
@@ -45,29 +46,21 @@ class SpotTFPublisher:
         self._tf_broadcaster.sendTransform(t)
 
     def publish_static_transform(self, tfrom: SE3Pose, header: str, child: str):
-        """Publish the transform from ODOM to BODY frame."""
-        t = TransformStamped()
-        t.header.stamp = self._node.get_clock().now().to_msg()
-        t.header.frame_id = header
-        t.child_frame_id = child
-        t.transform.translation.x = tfrom.position.x
-        t.transform.translation.y = tfrom.position.y
-        t.transform.translation.z = tfrom.position.z
-        t.transform.rotation.x = tfrom.rotation.x
-        t.transform.rotation.y = tfrom.rotation.y
-        t.transform.rotation.z = tfrom.rotation.z
-        t.transform.rotation.w = tfrom.rotation.w
-        self._static_tf_broadcaster.sendTransform(t)
+        """Publish a static transform and update the internal cache."""
+        self.publish_static_transforms([(tfrom, header, child)])
 
     def publish_static_transforms(self, transforms):
-        """Publish a list of static transforms.
+        """Publish a list of static transforms and update the internal cache.
 
         Args:
             transforms: List of tuples (tfrom: SE3Pose, header: str, child: str)
         """
+        for tfrom, header, child in transforms:
+            self._static_transforms_cache[child] = (tfrom, header)
+
         tf_msgs = []
         now = self._node.get_clock().now().to_msg()
-        for tfrom, header, child in transforms:
+        for child, (tfrom, header) in self._static_transforms_cache.items():
             t = TransformStamped()
             t.header.stamp = now
             t.header.frame_id = header

@@ -177,6 +177,7 @@ class SpotROS2Driver(Node):
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
         # self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
         self.fiducial_pose_array_publisher = self.create_publisher(PoseArray, "fiducial_poses", 10)
+        self.fiducial_cache = {}
 
         # Create commander
         self.commander = SpotCommander(self, self.command_client, self.robot_state_client, self.odom_frame, self.tf_buffer)
@@ -224,63 +225,68 @@ class SpotROS2Driver(Node):
             [world_object_pb2.WORLD_OBJECT_APRILTAG]
         ).world_objects
 
-        if fiducials:
+        target_frame_id = f"odom_{self.odom_choice}" if self.odom_choice != "lidar" else "odom_lidar"
+
+        for fiducial in fiducials:
+            raw_name = fiducial.name 
+            tag_id_str = raw_name.split('_')[-1]
+            tag_id = int(tag_id_str)
+            fiducial_frame = f"filtered_fiducial_{tag_id}"
+
+            final_se3_pose = None
+            if self.odom_choice != "lidar":
+                # get transform: Tag -> Odom (computed by Spot internally)
+                final_se3_pose = get_a_tform_b(
+                    fiducial.transforms_snapshot, 
+                    self.odom_frame,
+                    fiducial_frame
+                )
+            else:
+                tform_body_fiducial = get_a_tform_b(
+                    fiducial.transforms_snapshot, 
+                    BODY_FRAME_NAME, 
+                    fiducial_frame
+                )
+
+                try:
+                    tf_odom_base = self.tf_buffer.lookup_transform(
+                        "odom_lidar",
+                        "base_link",
+                        rclpy.time.Time(),
+                    )
+
+                    tform_odom_base = SE3Pose(
+                        tf_odom_base.transform.translation.x,
+                        tf_odom_base.transform.translation.y,
+                        tf_odom_base.transform.translation.z,
+                        Quat(
+                            tf_odom_base.transform.rotation.w,
+                            tf_odom_base.transform.rotation.x,
+                            tf_odom_base.transform.rotation.y,
+                            tf_odom_base.transform.rotation.z,
+                        )
+                    )
+
+                    final_se3_pose = tform_odom_base * tform_body_fiducial
+                except Exception as e:
+                    self.get_logger().warn(f"Could not look up transform from 'odom_lidar' to 'base_link': {e}")
+
+            if final_se3_pose:
+                ros_pose = self._bosdyn_pose_to_ros_pose(final_se3_pose)
+                self.fiducial_cache[tag_id] = ros_pose
+                # Broadcast as static TF
+                self.tf_publisher.publish_static_transform(final_se3_pose, target_frame_id, f"fiducial_{tag_id}")
+
+        # Publish the cached fiducials
+        if self.fiducial_cache:
             pose_array_msg = PoseArray()
             pose_array_msg.header.stamp = self.get_clock().now().to_msg()
-            target_frame_id = f"odom_{self.odom_choice}" if self.odom_choice != "lidar" else "odom_lidar"
             pose_array_msg.header.frame_id = target_frame_id
+            
+            for tag_id in sorted(self.fiducial_cache.keys()):
+                pose_array_msg.poses.append(self.fiducial_cache[tag_id])
 
-            for fiducial in fiducials:
-                raw_name = fiducial.name 
-                tag_id_str = raw_name.split('_')[-1]
-                tag_id = int(tag_id_str)
-                fiducial_frame = f"filtered_fiducial_{tag_id}"
-
-                final_se3_pose = None
-                if self.odom_choice != "lidar":
-                    # get transform: Tag -> Odom (computed by Spot internally)
-                    final_se3_pose = get_a_tform_b(
-                        fiducial.transforms_snapshot, 
-                        self.odom_frame,
-                        fiducial_frame
-                    )
-                else:
-                    tform_body_fiducial = get_a_tform_b(
-                        fiducial.transforms_snapshot, 
-                        BODY_FRAME_NAME, 
-                        fiducial_frame
-                    )
-
-                    try:
-                        tf_odom_base = self.tf_buffer.lookup_transform(
-                            "odom_lidar",
-                            "base_link",
-                            rclpy.time.Time(),
-                        )
-
-                        tform_odom_base = SE3Pose(
-                            tf_odom_base.transform.translation.x,
-                            tf_odom_base.transform.translation.y,
-                            tf_odom_base.transform.translation.z,
-                            Quat(
-                                tf_odom_base.transform.rotation.w,
-                                tf_odom_base.transform.rotation.x,
-                                tf_odom_base.transform.rotation.y,
-                                tf_odom_base.transform.rotation.z,
-                            )
-                        )
-
-                        final_se3_pose = tform_odom_base * tform_body_fiducial
-                    except Exception as e:
-                        self.get_logger().warn(f"Could not look up transform from 'odom_lidar' to 'base_link': {e}")
-
-                if final_se3_pose:
-                    ros_pose = self._bosdyn_pose_to_ros_pose(final_se3_pose)
-                    pose_array_msg.poses.append(ros_pose)
-
-            # Publish if we found any tags
-            if pose_array_msg.poses:
-                self.fiducial_pose_array_publisher.publish(pose_array_msg)
+            self.fiducial_pose_array_publisher.publish(pose_array_msg)
 
         # ---------------------------------------------------------------------
         # 2. IMAGE PUBLISHING
@@ -289,7 +295,7 @@ class SpotROS2Driver(Node):
 
 
         # ---------------------------------------------------------------------
-        # 3. IMAGE PUBLISHING
+        # 3. Odom PUBLISHING
         # ---------------------------------------------------------------------
         if self.odom_choice != "lidar":
             robot_state: RobotState = self.robot_state_client.get_robot_state()
