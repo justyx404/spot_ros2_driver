@@ -225,7 +225,8 @@ class SpotROS2Driver(Node):
             [world_object_pb2.WORLD_OBJECT_APRILTAG]
         ).world_objects
 
-        target_frame_id = f"odom_{self.odom_choice}" if self.odom_choice != "lidar" else "odom_lidar"
+        target_frame_id = "base_link"
+        self.fiducial_cache.clear()
 
         for fiducial in fiducials:
             raw_name = fiducial.name 
@@ -233,48 +234,17 @@ class SpotROS2Driver(Node):
             tag_id = int(tag_id_str)
             fiducial_frame = f"filtered_fiducial_{tag_id}"
 
-            final_se3_pose = None
-            if self.odom_choice != "lidar":
-                # get transform: Tag -> Odom (computed by Spot internally)
-                final_se3_pose = get_a_tform_b(
-                    fiducial.transforms_snapshot, 
-                    self.odom_frame,
-                    fiducial_frame
-                )
-            else:
-                tform_body_fiducial = get_a_tform_b(
-                    fiducial.transforms_snapshot, 
-                    BODY_FRAME_NAME, 
-                    fiducial_frame
-                )
-
-                try:
-                    tf_odom_base = self.tf_buffer.lookup_transform(
-                        "odom_lidar",
-                        "base_link",
-                        rclpy.time.Time(),
-                    )
-
-                    tform_odom_base = SE3Pose(
-                        tf_odom_base.transform.translation.x,
-                        tf_odom_base.transform.translation.y,
-                        tf_odom_base.transform.translation.z,
-                        Quat(
-                            tf_odom_base.transform.rotation.w,
-                            tf_odom_base.transform.rotation.x,
-                            tf_odom_base.transform.rotation.y,
-                            tf_odom_base.transform.rotation.z,
-                        )
-                    )
-
-                    final_se3_pose = tform_odom_base * tform_body_fiducial
-                except Exception as e:
-                    self.get_logger().warn(f"Could not look up transform from 'odom_lidar' to 'base_link': {e}")
+            # get transform: Body -> Tag
+            final_se3_pose = get_a_tform_b(
+                fiducial.transforms_snapshot, 
+                BODY_FRAME_NAME,
+                fiducial_frame
+            )
 
             if final_se3_pose:
                 ros_pose = self._bosdyn_pose_to_ros_pose(final_se3_pose)
                 self.fiducial_cache[tag_id] = ros_pose
-                # Broadcast as static TF
+                # Broadcast TF relative to base_link
                 self.tf_publisher.publish_static_transform(final_se3_pose, target_frame_id, f"fiducial_{tag_id}")
 
         # Publish the cached fiducials
