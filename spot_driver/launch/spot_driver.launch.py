@@ -33,6 +33,12 @@ def generate_launch_description():
         description="Whether to use the streaming client (requires license)",
     )
 
+    declare_cmd_vel_duration_arg = DeclareLaunchArgument(
+        "cmd_vel_command_duration",
+        default_value="1.0",
+        description="Seconds each /cmd_vel command remains valid on the robot",
+    )
+
     declare_rviz_arg = DeclareLaunchArgument("rviz", default_value="false", description="Whether to start RViz")
 
     declare_rviz_config_arg = DeclareLaunchArgument(
@@ -46,6 +52,7 @@ def generate_launch_description():
 
     odometry_frame = LaunchConfiguration("odometry_frame")
     use_streaming_client = LaunchConfiguration("use_streaming_client")
+    cmd_vel_command_duration = LaunchConfiguration("cmd_vel_command_duration")
     rviz = LaunchConfiguration("rviz")
     rviz_config = LaunchConfiguration("rviz_config")
 
@@ -62,6 +69,7 @@ def generate_launch_description():
                 "password": password,
                 "odometry_frame": odometry_frame,
                 "use_streaming_client": use_streaming_client,
+                "cmd_vel_command_duration": cmd_vel_command_duration,
             }
         ],
         sigterm_timeout=LaunchConfiguration("sigterm_timeout", default="30"),
@@ -93,6 +101,7 @@ def generate_launch_description():
             declare_password_arg,
             declare_odomframe_arg,
             declare_streaming_client_arg,
+            declare_cmd_vel_duration_arg,
             declare_rviz_arg,
             declare_rviz_config_arg,
             nodes_group,

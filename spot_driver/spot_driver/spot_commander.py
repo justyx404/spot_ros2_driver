@@ -35,13 +35,21 @@ class SpotCommander:
     This class is responsible for handling all robot movement commands.
     """
 
-    def __init__(self, node: Node, command_client: RobotCommandClient, robot_state_client: RobotStateClient, 
-                 odom_frame: str, tf_buffer: Buffer):
+    def __init__(
+        self,
+        node: Node,
+        command_client: RobotCommandClient,
+        robot_state_client: RobotStateClient,
+        odom_frame: str,
+        tf_buffer: Buffer,
+        cmd_vel_command_duration: float = 1.0,
+    ):
         self._node = node
         self._command_client = command_client
         self._robot_state_client = robot_state_client
         self._odom_frame = odom_frame
         self._tf_buffer = tf_buffer
+        self._cmd_vel_command_duration = max(float(cmd_vel_command_duration), 0.1)
     
     def move_relative_xy(self, goal_handle: ServerGoalHandle):
         """Execute the move to relative [x, y, yaw] action."""
@@ -147,7 +155,10 @@ class SpotCommander:
         command = RobotCommandBuilder.synchro_velocity_command(v_x=v_x, v_y=v_y, v_rot=v_rot)
         try:
             # Send the command to the robot
-            self._command_client.robot_command(command, end_time_secs=time.time() + 0.5)
+            self._command_client.robot_command(
+                command,
+                end_time_secs=time.time() + self._cmd_vel_command_duration,
+            )
             self._node.get_logger().debug(f"Sent velocity command: v_x={v_x}, v_y={v_y}, v_rot={v_rot}")
         except (RpcError, ResponseError) as e:
             self._node.get_logger().error(f"Failed to send velocity command: {e}")

@@ -93,6 +93,10 @@ class SpotROS2Driver(Node):
         # if the user has a streaming client license, use it to get IMU data at 333Hz
         self.declare_parameter("use_streaming_client", False)
         self.use_streaming_client = self.get_parameter("use_streaming_client").get_parameter_value().bool_value
+        self.declare_parameter("cmd_vel_command_duration", 1.0)
+        self.cmd_vel_command_duration = (
+            self.get_parameter("cmd_vel_command_duration").get_parameter_value().double_value
+        )
 
         self._shutdown_event = threading.Event()
 
@@ -180,7 +184,14 @@ class SpotROS2Driver(Node):
         self.fiducial_cache = {}
 
         # Create commander
-        self.commander = SpotCommander(self, self.command_client, self.robot_state_client, self.odom_frame, self.tf_buffer)
+        self.commander = SpotCommander(
+            self,
+            self.command_client,
+            self.robot_state_client,
+            self.odom_frame,
+            self.tf_buffer,
+            self.cmd_vel_command_duration,
+        )
         self.cmd_vel_subscriber = self.create_subscription(Twist, "cmd_vel", self.commander.cmd_vel_callback, 10)
 
         robot_state_pub_group = MutuallyExclusiveCallbackGroup()
