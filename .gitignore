@@ -2,3 +2,5 @@
 .tgz
 .tar
 log
+__pycache__/
+*.py[cod]
