@@ -14,14 +14,12 @@
 
 """A minimal ROS 2 driver for Boston Dynamics Spot robot."""
 
-import math
 import threading
 import time
 from typing import Optional
 
 import bosdyn.client
-from bosdyn.api.basic_command_pb2 import RobotCommandFeedbackStatus
-from bosdyn.api.robot_state_pb2 import ImuState, RobotState
+from bosdyn.api.robot_state_pb2 import RobotState
 from bosdyn.client import ResponseError, RpcError
 from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
 from bosdyn.client.frame_helpers import (
@@ -29,31 +27,28 @@ from bosdyn.client.frame_helpers import (
     ODOM_FRAME_NAME,
     VISION_FRAME_NAME,
     get_a_tform_b,
-    get_se2_a_tform_b,
 )
 from bosdyn.client.image import ImageClient
 from bosdyn.client.lease import Error as LeaseError
 from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
-from bosdyn.client.math_helpers import SE2Pose, SE3Pose, SE3Velocity, Quat
-from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient, blocking_stand
+from bosdyn.client.math_helpers import SE3Pose, SE3Velocity
+from bosdyn.client.robot_command import RobotCommandClient, blocking_stand
 from bosdyn.client.robot_state import RobotStateClient, RobotStateStreamingClient
 from bosdyn.client.world_object import WorldObjectClient, world_object_pb2
 
 import rclpy
 from rclpy.action import ActionServer
-from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.timer import Timer
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from tf2_ros.buffer import Buffer
 from tf2_ros import TransformListener
-from geometry_msgs.msg import PoseStamped, TransformStamped, Twist, PoseArray, Pose
+from geometry_msgs.msg import Pose, PoseArray, Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import CameraInfo, Image, Imu
-
 from spot_action.action import MoveRelativeXY
 from spot_driver.spot_commander import SpotCommander
+from spot_driver.spot_gripper_camera import DEFAULT_GRIPPER_CAMERA_RESOLUTION, set_gripper_camera_resolution
 from spot_driver.spot_image import SpotImagePublisher
 from spot_driver.spot_streams import SpotStreamer
 from spot_driver.spot_tf import SpotTFPublisher
@@ -97,6 +92,18 @@ class SpotROS2Driver(Node):
         self.cmd_vel_command_duration = (
             self.get_parameter("cmd_vel_command_duration").get_parameter_value().double_value
         )
+        self.declare_parameter("gripper_camera", False)
+        self.gripper_camera = self.get_parameter("gripper_camera").get_parameter_value().bool_value
+        self.declare_parameter("front_camera_rate", 10.0)
+        self.front_camera_rate = self.get_parameter("front_camera_rate").get_parameter_value().double_value
+        self.declare_parameter("gripper_camera_rate", 10.0)
+        self.gripper_camera_rate = self.get_parameter("gripper_camera_rate").get_parameter_value().double_value
+        self.declare_parameter("jpeg_quality", 75)
+        self.jpeg_quality = self.get_parameter("jpeg_quality").get_parameter_value().integer_value
+        self.declare_parameter("gripper_camera_resolution", DEFAULT_GRIPPER_CAMERA_RESOLUTION)
+        self.gripper_camera_resolution = (
+            self.get_parameter("gripper_camera_resolution").get_parameter_value().string_value
+        )
 
         self._shutdown_event = threading.Event()
 
@@ -106,6 +113,8 @@ class SpotROS2Driver(Node):
         self.robot_state_client: Optional[RobotStateClient] = None
         self.command_client: Optional[RobotCommandClient] = None
         self.world_object_client: Optional[WorldObjectClient] = None
+        self.image_client: Optional[ImageClient] = None
+        self.has_gripper = False
 
         try:
             # Robot initialization
@@ -116,7 +125,8 @@ class SpotROS2Driver(Node):
                 sdk.register_service_client(RobotStateStreamingClient)
             else:
                 self.get_logger().info(
-                    "Streaming client is disabled by default. In order to use it, you need to purchase an additional license from Boston Dynamics."
+                    "Streaming client is disabled by default. In order to use it, you need to purchase an "
+                    "additional license from Boston Dynamics."
                 )
 
             self.robot = sdk.create_robot(hostname)
@@ -145,6 +155,19 @@ class SpotROS2Driver(Node):
             self.world_object_client = self.robot.ensure_client(WorldObjectClient.default_service_name)
             self.image_client = self.robot.ensure_client(ImageClient.default_service_name)
             self.get_logger().info("Robot clients created.")
+
+            if self.gripper_camera:
+                self.has_gripper = self.robot.has_arm()
+                if self.has_gripper:
+                    set_gripper_camera_resolution(self.robot, self.gripper_camera_resolution)
+                    self.get_logger().info(
+                        "Spot arm/gripper detected; gripper camera publishing enabled "
+                        f"at {self.gripper_camera_resolution}."
+                    )
+                else:
+                    self.get_logger().info("No Spot arm/gripper detected; gripper camera publishing disabled.")
+            else:
+                self.get_logger().info("Gripper camera publishing disabled by parameter.")
 
             # Lease management
             lease_client = self.robot.ensure_client(LeaseClient.default_service_name)
@@ -176,8 +199,20 @@ class SpotROS2Driver(Node):
         self.tf_publisher = SpotTFPublisher(self)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.image_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         
-        self.image_component = SpotImagePublisher(self)
+        self.image_component = SpotImagePublisher(
+            self,
+            self.image_client,
+            include_gripper_camera=self.gripper_camera and self.has_gripper,
+            image_qos=self.image_qos,
+            jpeg_quality=self.jpeg_quality,
+        )
         self.odom_publisher = self.create_publisher(Odometry, "odom", 10)
         # self.fiducial_pose_publisher = self.create_publisher(PoseStamped, "fiducial_pose", 10)
         self.fiducial_pose_array_publisher = self.create_publisher(PoseArray, "fiducial_poses", 10)
@@ -199,19 +234,47 @@ class SpotROS2Driver(Node):
             0.1, self.publish_robot_state, callback_group=robot_state_pub_group
         )
 
-        # broadcast camera frame as static TF
+        # broadcast camera frames as static TFs
         static_transforms = []
-        
-        cam_tform_body = self.image_component.get_camera_transform_from_body(self.image_client, "frontleft_fisheye_image")
-        static_transforms.append((cam_tform_body, "base_link", "frontleft_fisheye"))
-        self.get_logger().info("Collected frontleft_fisheye TF.")
+        for source in self.image_component.sources:
+            if not self.image_component.is_static_source(source):
+                self.get_logger().info(f"Skipping static TF for dynamic camera source {source}.")
+                continue
 
-        cam_tform_body = self.image_component.get_camera_transform_from_body(self.image_client, "frontright_fisheye_image")
-        static_transforms.append((cam_tform_body, "base_link", "frontright_fisheye"))
-        self.get_logger().info("Collected frontright_fisheye TF.")
+            try:
+                body_tform_camera, frame_name = self.image_component.get_camera_transform_and_frame_from_body(
+                    self.image_client, source
+                )
+            except (RpcError, ResponseError) as e:
+                self.get_logger().warn(f"Failed to collect TF for camera source {source}: {e}")
+                continue
+
+            if body_tform_camera is None:
+                self.get_logger().warn(f"No body transform found for camera source {source}.")
+                continue
+
+            static_transforms.append((body_tform_camera, "base_link", frame_name))
+            self.get_logger().info(f"Collected {source} TF as {frame_name}.")
         
-        self.tf_publisher.publish_static_transforms(static_transforms)
-        self.get_logger().info("Published all static TFs.")
+        if static_transforms:
+            self.tf_publisher.publish_static_transforms(static_transforms)
+            self.get_logger().info("Published all static TFs.")
+
+        image_pub_group = MutuallyExclusiveCallbackGroup()
+        self.front_camera_timer = self._create_image_timer(
+            self.front_camera_rate,
+            self.publish_front_camera_images,
+            image_pub_group,
+            "front cameras",
+        )
+        self.gripper_camera_timer = None
+        if SpotImagePublisher.GRIPPER_IMAGE_SOURCE in self.image_component.sources:
+            self.gripper_camera_timer = self._create_image_timer(
+                self.gripper_camera_rate,
+                self.publish_gripper_camera_images,
+                image_pub_group,
+                "gripper camera",
+            )
 
         # Action server initialization
         action_group = MutuallyExclusiveCallbackGroup()
@@ -226,6 +289,29 @@ class SpotROS2Driver(Node):
         if self.use_streaming_client:
             self.streamer = SpotStreamer(self, self._shutdown_event)
             self.streamer.start(self.robot_state_streaming_client)
+
+    def _create_image_timer(self, rate_hz: float, callback, callback_group, label: str):
+        if rate_hz <= 0.0:
+            self.get_logger().info(f"{label} image publishing disabled.")
+            return None
+
+        timer_period = 1.0 / rate_hz
+        self.get_logger().info(f"Publishing {label} at {rate_hz:.2f} Hz.")
+        return self.create_timer(timer_period, callback, callback_group=callback_group)
+
+    def publish_front_camera_images(self):
+        self.image_component.publish_image_and_info(
+            self.image_client,
+            self.tf_publisher,
+            sources=SpotImagePublisher.BODY_IMAGE_SOURCES,
+        )
+
+    def publish_gripper_camera_images(self):
+        self.image_component.publish_image_and_info(
+            self.image_client,
+            self.tf_publisher,
+            sources=[SpotImagePublisher.GRIPPER_IMAGE_SOURCE],
+        )
 
     def publish_robot_state(self):
         """Periodic publish robot data (if connected)."""
@@ -270,17 +356,13 @@ class SpotROS2Driver(Node):
             self.fiducial_pose_array_publisher.publish(pose_array_msg)
 
         # ---------------------------------------------------------------------
-        # 2. IMAGE PUBLISHING
-        # ---------------------------------------------------------------------
-        self.image_component.publish_image_and_info(self.image_client)
-
-
-        # ---------------------------------------------------------------------
-        # 3. Odom PUBLISHING
+        # 2. Odom PUBLISHING
         # ---------------------------------------------------------------------
         if self.odom_choice != "lidar":
             robot_state: RobotState = self.robot_state_client.get_robot_state()
-            odom_tfrom_body = get_a_tform_b(robot_state.kinematic_state.transforms_snapshot, self.odom_frame, BODY_FRAME_NAME)
+            odom_tfrom_body = get_a_tform_b(
+                robot_state.kinematic_state.transforms_snapshot, self.odom_frame, BODY_FRAME_NAME
+            )
             odom_vel_of_body = robot_state.kinematic_state.velocity_of_body_in_odom
             self.tf_publisher.publish_transform(odom_tfrom_body, f"odom_{self.odom_choice}", "base_link")
             self.publish_odometry(odom_tfrom_body, odom_vel_of_body, f"odom_{self.odom_choice}", "base_link")

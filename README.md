@@ -19,6 +19,33 @@ ros2 run map_localization map_localizer_node
 ros2 run nav_goal_listener nav_goal_listener
 ```
 
+## Camera topics
+
+The driver publishes body fisheye cameras as JPEG `sensor_msgs/CompressedImage` by default:
+
+```
+/camera/frontleft_fisheye/image/compressed
+/camera/frontleft_fisheye/camera_info
+/camera/frontright_fisheye/image/compressed
+/camera/frontright_fisheye/camera_info
+```
+
+On Spot variants with an arm/gripper, enable the gripper camera. It publishes JPEG plus dynamic camera TF:
+
+```
+/camera/hand_color/image/compressed
+/camera/hand_color/camera_info
+```
+
+Enable gripper camera at 1920x1080 and 10 Hz:
+
+```
+ros2 launch spot_driver spot_driver.launch.py \
+  gripper_camera:=true \
+  gripper_camera_rate:=10.0 \
+  gripper_camera_resolution:=1920x1080
+```
+
 ## To control spot
 ```
 ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "linear: {x: 0.5}"

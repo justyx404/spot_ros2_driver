@@ -39,6 +39,36 @@ def generate_launch_description():
         description="Seconds each /cmd_vel command remains valid on the robot",
     )
 
+    declare_gripper_camera_arg = DeclareLaunchArgument(
+        "gripper_camera",
+        default_value="false",
+        description="Whether to publish the hand_color_image gripper camera when Spot has an arm/gripper",
+    )
+
+    declare_front_camera_rate_arg = DeclareLaunchArgument(
+        "front_camera_rate",
+        default_value="10.0",
+        description="Front fisheye camera publish rate in Hz. Set <= 0 to disable.",
+    )
+
+    declare_gripper_camera_rate_arg = DeclareLaunchArgument(
+        "gripper_camera_rate",
+        default_value="10.0",
+        description="Gripper camera publish rate in Hz. Set <= 0 to disable.",
+    )
+
+    declare_jpeg_quality_arg = DeclareLaunchArgument(
+        "jpeg_quality",
+        default_value="75",
+        description="JPEG quality percent for Spot image requests",
+    )
+
+    declare_gripper_camera_resolution_arg = DeclareLaunchArgument(
+        "gripper_camera_resolution",
+        default_value="1920x1080",
+        description="Gripper camera resolution set through the Spot SDK gripper camera param service",
+    )
+
     declare_rviz_arg = DeclareLaunchArgument("rviz", default_value="false", description="Whether to start RViz")
 
     declare_rviz_config_arg = DeclareLaunchArgument(
@@ -53,6 +83,11 @@ def generate_launch_description():
     odometry_frame = LaunchConfiguration("odometry_frame")
     use_streaming_client = LaunchConfiguration("use_streaming_client")
     cmd_vel_command_duration = LaunchConfiguration("cmd_vel_command_duration")
+    gripper_camera = LaunchConfiguration("gripper_camera")
+    front_camera_rate = LaunchConfiguration("front_camera_rate")
+    gripper_camera_rate = LaunchConfiguration("gripper_camera_rate")
+    jpeg_quality = LaunchConfiguration("jpeg_quality")
+    gripper_camera_resolution = LaunchConfiguration("gripper_camera_resolution")
     rviz = LaunchConfiguration("rviz")
     rviz_config = LaunchConfiguration("rviz_config")
 
@@ -70,6 +105,11 @@ def generate_launch_description():
                 "odometry_frame": odometry_frame,
                 "use_streaming_client": use_streaming_client,
                 "cmd_vel_command_duration": cmd_vel_command_duration,
+                "gripper_camera": gripper_camera,
+                "front_camera_rate": front_camera_rate,
+                "gripper_camera_rate": gripper_camera_rate,
+                "jpeg_quality": jpeg_quality,
+                "gripper_camera_resolution": gripper_camera_resolution,
             }
         ],
         sigterm_timeout=LaunchConfiguration("sigterm_timeout", default="30"),
@@ -102,6 +142,11 @@ def generate_launch_description():
             declare_odomframe_arg,
             declare_streaming_client_arg,
             declare_cmd_vel_duration_arg,
+            declare_gripper_camera_arg,
+            declare_front_camera_rate_arg,
+            declare_gripper_camera_rate_arg,
+            declare_jpeg_quality_arg,
+            declare_gripper_camera_resolution_arg,
             declare_rviz_arg,
             declare_rviz_config_arg,
             nodes_group,
