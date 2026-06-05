@@ -14,6 +14,7 @@
 
 from bosdyn.api import gripper_camera_param_pb2
 from bosdyn.client.gripper_camera_param import GripperCameraParamClient
+from bosdyn.client.robot_command import RobotCommandBuilder
 
 DEFAULT_GRIPPER_CAMERA_RESOLUTION = "1920x1080"
 
@@ -25,6 +26,18 @@ GRIPPER_CAMERA_RESOLUTION_MODES = {
     "4096x2160": gripper_camera_param_pb2.GripperCameraParams.MODE_4096_2160,
     "4208x3120": gripper_camera_param_pb2.GripperCameraParams.MODE_4208_3120,
 }
+
+
+def open_gripper(command_client):
+    """Send a Spot SDK command to open the gripper."""
+    command = RobotCommandBuilder.claw_gripper_open_command()
+    return command_client.robot_command(command)
+
+
+def close_gripper(command_client):
+    """Send a Spot SDK command to close the gripper."""
+    command = RobotCommandBuilder.claw_gripper_close_command()
+    return command_client.robot_command(command)
 
 
 def gripper_camera_mode_from_resolution(resolution: str) -> int:

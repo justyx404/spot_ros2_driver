@@ -48,7 +48,12 @@ from geometry_msgs.msg import Pose, PoseArray, Twist
 from nav_msgs.msg import Odometry
 from spot_action.action import MoveRelativeXY
 from spot_driver.spot_commander import SpotCommander
-from spot_driver.spot_gripper_camera import DEFAULT_GRIPPER_CAMERA_RESOLUTION, set_gripper_camera_resolution
+from spot_driver.spot_gripper import (
+    DEFAULT_GRIPPER_CAMERA_RESOLUTION,
+    close_gripper,
+    open_gripper,
+    set_gripper_camera_resolution,
+)
 from spot_driver.spot_image import SpotImagePublisher
 from spot_driver.spot_streams import SpotStreamer
 from spot_driver.spot_tf import SpotTFPublisher
@@ -115,6 +120,7 @@ class SpotROS2Driver(Node):
         self.world_object_client: Optional[WorldObjectClient] = None
         self.image_client: Optional[ImageClient] = None
         self.has_gripper = False
+        self.gripper_opened_for_camera = False
 
         try:
             # Robot initialization
@@ -190,6 +196,14 @@ class SpotROS2Driver(Node):
 
             blocking_stand(self.command_client, timeout_sec=10)
             self.get_logger().info("Robot standing.")
+
+            if self.gripper_camera and self.has_gripper:
+                try:
+                    open_gripper(self.command_client)
+                    self.gripper_opened_for_camera = True
+                    self.get_logger().info("Opened gripper for high-resolution camera capture.")
+                except (RpcError, ResponseError, LeaseError) as e:
+                    self.get_logger().warn(f"Failed to open gripper for camera capture: {e}")
 
         except (RpcError, ResponseError, LeaseError) as e:
             self.get_logger().error(f"Failed to connect to the robot: {e}")
@@ -403,6 +417,13 @@ class SpotROS2Driver(Node):
     def shutdown_robot(self):
         """Shutdown the driver and release resources."""
         print("Shutting down the robot...")
+        if self.gripper_opened_for_camera and self.command_client:
+            try:
+                close_gripper(self.command_client)
+                time.sleep(1.0)
+                print("Gripper closed.")
+            except (RpcError, ResponseError, LeaseError) as e:
+                print(f"Failed to close gripper during shutdown: {e}")
         if self.robot and self.robot.is_powered_on():
             self.robot.power_off(cut_immediately=False, timeout_sec=20)
             print("Robot powered off.")

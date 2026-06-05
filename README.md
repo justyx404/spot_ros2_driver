@@ -30,7 +30,8 @@ The driver publishes body fisheye cameras as JPEG `sensor_msgs/CompressedImage` 
 /camera/frontright_fisheye/camera_info
 ```
 
-On Spot variants with an arm/gripper, enable the gripper camera. It publishes JPEG plus dynamic camera TF:
+On Spot variants with an arm/gripper, enable the gripper camera. The driver opens the gripper for camera capture,
+publishes JPEG plus dynamic camera TF, then closes the gripper during shutdown:
 
 ```
 /camera/hand_color/image/compressed
