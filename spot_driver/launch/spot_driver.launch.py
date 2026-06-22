@@ -39,6 +39,12 @@ def generate_launch_description():
         description="Seconds each /cmd_vel command remains valid on the robot",
     )
 
+    declare_take_lease_arg = DeclareLaunchArgument(
+        "take_lease",
+        default_value="true",
+        description="Force-take Spot body lease from the current owner before starting the driver",
+    )
+
     declare_gripper_camera_arg = DeclareLaunchArgument(
         "gripper_camera",
         default_value="false",
@@ -83,6 +89,7 @@ def generate_launch_description():
     odometry_frame = LaunchConfiguration("odometry_frame")
     use_streaming_client = LaunchConfiguration("use_streaming_client")
     cmd_vel_command_duration = LaunchConfiguration("cmd_vel_command_duration")
+    take_lease = LaunchConfiguration("take_lease")
     gripper_camera = LaunchConfiguration("gripper_camera")
     front_camera_rate = LaunchConfiguration("front_camera_rate")
     gripper_camera_rate = LaunchConfiguration("gripper_camera_rate")
@@ -105,6 +112,7 @@ def generate_launch_description():
                 "odometry_frame": odometry_frame,
                 "use_streaming_client": use_streaming_client,
                 "cmd_vel_command_duration": cmd_vel_command_duration,
+                "take_lease": take_lease,
                 "gripper_camera": gripper_camera,
                 "front_camera_rate": front_camera_rate,
                 "gripper_camera_rate": gripper_camera_rate,
@@ -142,6 +150,7 @@ def generate_launch_description():
             declare_odomframe_arg,
             declare_streaming_client_arg,
             declare_cmd_vel_duration_arg,
+            declare_take_lease_arg,
             declare_gripper_camera_arg,
             declare_front_camera_rate_arg,
             declare_gripper_camera_rate_arg,

@@ -3,6 +3,12 @@
 ros2 launch spot_driver spot_driver.launch.py
 ```
 
+By default, startup force-takes Spot's body lease from the current owner. To avoid force-taking the lease:
+
+```
+ros2 launch spot_driver spot_driver.launch.py take_lease:=false
+```
+
 ```
 ros2 run tf2_ros static_transform_publisher -0.10795 0.0 0.1397 -1.57 -1.57 0 world wall
 ```
@@ -38,13 +44,10 @@ publishes JPEG plus dynamic camera TF, then closes the gripper during shutdown:
 /camera/hand_color/camera_info
 ```
 
-Enable gripper camera at 1920x1080 and 10 Hz:
+The gripper camera defaults to disabled. Enable it with default 1920x1080 resolution and 10 Hz rate:
 
 ```
-ros2 launch spot_driver spot_driver.launch.py \
-  gripper_camera:=true \
-  gripper_camera_rate:=10.0 \
-  gripper_camera_resolution:=1920x1080
+ros2 launch spot_driver spot_driver.launch.py gripper_camera:=true
 ```
 
 ## To control spot

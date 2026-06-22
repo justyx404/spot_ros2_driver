@@ -97,6 +97,8 @@ class SpotROS2Driver(Node):
         self.cmd_vel_command_duration = (
             self.get_parameter("cmd_vel_command_duration").get_parameter_value().double_value
         )
+        self.declare_parameter("take_lease", True)
+        self.take_lease = self.get_parameter("take_lease").get_parameter_value().bool_value
         self.declare_parameter("gripper_camera", False)
         self.gripper_camera = self.get_parameter("gripper_camera").get_parameter_value().bool_value
         self.declare_parameter("front_camera_rate", 10.0)
@@ -177,7 +179,14 @@ class SpotROS2Driver(Node):
 
             # Lease management
             lease_client = self.robot.ensure_client(LeaseClient.default_service_name)
-            self.lease_keep_alive = LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True)
+            if self.take_lease:
+                self.get_logger().warn("Force-taking Spot body lease from the current owner.")
+                lease_client.take()
+            self.lease_keep_alive = LeaseKeepAlive(
+                lease_client,
+                must_acquire=not self.take_lease,
+                return_at_exit=True,
+            )
             self.get_logger().info("Acquired lease.")
 
             # Acquire E-Stop
